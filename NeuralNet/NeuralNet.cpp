@@ -52,6 +52,12 @@ vector<vector<float>> multiplyMatrixByFloat(float factor, vector<vector<float>> 
     }
     return matrix;
 }
+vector<float> addFloatToTensor(vector<float> t, float f) {
+    for (int i = 0; i < t.size(); i++) {
+        t[i] += f;
+    }
+    return t;
+}
 class Neuron {
 public:
     vector<float> weights;
@@ -100,7 +106,7 @@ class FFNLinear {
 public:
     vector<Layer> Layers;
     FFNLinear(vector<Layer> Layers) {
-        this->Layers = Layers;
+        this->Layers = move(Layers);
     }
     vector<float> Forward(const vector<float> &input) {
         vector<float> output = input;
@@ -109,30 +115,35 @@ public:
         }
         return output;
     }
-    vector<float> Backward(float groundTruth, float output) {
-        // None of this works
+    void Backward(const vector<float>& input, float groundTruth, float output) {
         float loss = BCELoss(groundTruth, output);
-        float finalOutputError = output - groundTruth;
-        vector<vector<float>> weightedErrorContributions(Layers.size());
-        for (int i = Layers.size()-1; i > 0; i--) {
-            vector<vector<float>> weightsToNextLayer;
-            for (int j = 0; j < Layers[i+1].Neurons.size(); j++) {
-                weightsToNextLayer.push_back(Layers[i+1].Neurons[j].weights);
-            }
-            //weightedErrorContributions[i].push_back(multiplyMatrixByFloat(finalOutputError, weightsToNextLayer));
+        FFNLinear mutation = createMutation();
+        float mutationOutput = mutation.Forward(input)[0];
+        if (BCELoss(groundTruth,mutationOutput) < loss) {
+            Layers = mutation.Layers;
         }
+    }
+    FFNLinear createMutation() {
+        FFNLinear mutation = *this;
+        for (int i = 0; i < Layers.size(); i++) {
+            for (int j = 0; j < Layers[i].Neurons.size(); j++) {
+                mutation.Layers[i].Neurons[j].weights = addFloatToTensor(Layers[i].Neurons[j].weights, dist6(rng));
+            }
+        }
+        return mutation;
     }
 };
 int main()
 {
-    FFNLinear binaryClassifier({ Layer(1,8), Layer(8,16),Layer(16,8),Layer(8,1) });
-    vector<vector<float>> matrix2transpose = { { 1.0, 1.0, 2.0 },
-                              { 2.0, 1.0, 1.0 }};
-    vector<vector<float>> final = transposeMatrix(matrix2transpose);
-    for (int i = 0; i < final.size(); i++) {
-        for (int j = 0; j < final[i].size(); j++) {
-            cout << final[i][j] << " ";
-        }
-        cout << endl;
+    FFNLinear binaryClassifier({ Layer(1,8), Layer(8,1)});
+    vector<float> inputs = {1.0, 2.0, 10.0};
+    vector<float> input1 = { 1.0 };
+    vector<float> outputs = { 0.5, 1.0, 5.0 };
+    float untrainedOutput = binaryClassifier.Forward(input1)[0];
+    binaryClassifier.Backward(input1, 0.5, untrainedOutput);
+    for (int i = 0; i < 100; i++) {
+        binaryClassifier.Backward(input1, 0.5, binaryClassifier.Forward(input1)[0]);;
+        cout << binaryClassifier.Forward(input1)[0];
     }
+    cout << binaryClassifier.Forward(input1)[0];
 }
