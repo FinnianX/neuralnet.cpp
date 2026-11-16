@@ -10,7 +10,9 @@
 using namespace std;
 random_device dev;
 mt19937 rng(dev());
-uniform_real_distribution<float> dist6(-0.05f, 0.05f);
+uniform_real_distribution<float> dist6(-0.5f, 0.5f);
+uniform_real_distribution<float> percent(0, 1);
+
 
 map<int, string> tokenizer = {
     { 1, "a" },{ 2, "b" },{ 3, "c" },{ 4, "d" },{ 5, "e" },
@@ -32,6 +34,10 @@ float BCELoss(float truth, float predicted) {
     // Truth must be 1.0 or 0.0
     // Requires a sigmoided input
     return -1 * (truth * log(predicted) + (1 - truth) * log(1 - predicted));
+}
+float MSELoss(float truth, float predicted) {
+    float difference = truth - predicted;
+    return difference * difference;
 }
 vector<vector<float>> transposeMatrix(vector<vector<float>> mat1) {
     //Create opposite of mat1, its dimensions are swapped
@@ -64,11 +70,13 @@ public:
     float bias;
     float output = 0.0f;
     float outputWithActivation = 0.0f;
-    Neuron(int inputCount) {
+    float (*activation)(float);
+    Neuron(int inputCount, float (*activation)(float) = ReLU) {
         for (int i = 0; i < inputCount; i++) {
             weights.push_back(dist6(rng));
         }
         this->bias = dist6(rng);
+        this->activation = activation;
     }
     float pass(vector<float> &inputs) {
         float weightedSum = 0.0;
@@ -77,7 +85,7 @@ public:
         }
         weightedSum += bias;
         output = weightedSum;
-        outputWithActivation = ReLU(weightedSum);
+        outputWithActivation = activation(weightedSum);
         return outputWithActivation;
     }
 };
@@ -87,12 +95,14 @@ public:
     int width;
     int inputs;
     vector<Neuron> Neurons;
-    Layer(int inputs,int width) {
+    float (*activation)(float);
+    Layer(int inputs,int width, float (*activation)(float) = ReLU) {
         this->width = width;
         this->inputs = inputs;
         for (int i = 0; i < width; i++) {
-            Neurons.emplace_back(Neuron(inputs));
+            Neurons.emplace_back(Neuron(inputs,activation));
         }
+        this->activation = activation;
     }
     vector<float> pass(vector<float> &inputs) {
         vector<float> outputs;
@@ -105,7 +115,7 @@ public:
 class FFNLinear {
 public:
     vector<Layer> Layers;
-    FFNLinear(vector<Layer> Layers) {
+    FFNLinear(vector<Layer> Layers = {Layer(1,1)}) {
         this->Layers = move(Layers);
     }
     vector<float> Forward(const vector<float> &input) {
@@ -115,35 +125,74 @@ public:
         }
         return output;
     }
-    void Backward(const vector<float>& input, float groundTruth, float output) {
-        float loss = BCELoss(groundTruth, output);
-        FFNLinear mutation = createMutation();
-        float mutationOutput = mutation.Forward(input)[0];
-        if (BCELoss(groundTruth,mutationOutput) < loss) {
-            Layers = mutation.Layers;
+    void Backward(const vector<float>& input, const vector<float>& groundTruths, float lr=0.015, float mutationChance=0.3, int population=40) {
+        float averageFinalLoss = 0.0;
+        for (int i = 0; i < input.size(); i++) {
+            averageFinalLoss += MSELoss(groundTruths[i],Forward({ input[i] })[0]);
+        }
+        averageFinalLoss /= input.size();
+        float bestLoss = averageFinalLoss;
+        FFNLinear survivor = *this;
+        for (int i = 0; i < population; i++) {
+            FFNLinear mutation = createMutation(lr, mutationChance);
+            float averageLoss = 0.0;
+            for (int i = 0; i < input.size(); i++) {
+                averageLoss += MSELoss(groundTruths[i], mutation.Forward({ input[i] })[0]);
+            }
+            averageLoss /= input.size();
+            if (averageLoss < bestLoss) {
+                survivor.Layers = mutation.Layers;
+                bestLoss = averageLoss;
+            }
+        }
+        if (bestLoss < averageFinalLoss) {
+            Layers = survivor.Layers;
+            cout << bestLoss << endl;
         }
     }
-    FFNLinear createMutation() {
+    FFNLinear createMutation(float lr, float chance) {
+        uniform_real_distribution<float> learning(-lr, lr);
         FFNLinear mutation = *this;
         for (int i = 0; i < Layers.size(); i++) {
             for (int j = 0; j < Layers[i].Neurons.size(); j++) {
-                mutation.Layers[i].Neurons[j].weights = addFloatToTensor(Layers[i].Neurons[j].weights, dist6(rng));
+                if (percent(rng) < chance) {
+                    mutation.Layers[i].Neurons[j].weights = addFloatToTensor(Layers[i].Neurons[j].weights, learning(rng));
+                    mutation.Layers[i].Neurons[j].bias = Layers[i].Neurons[j].bias + learning(rng);
+                }
             }
         }
         return mutation;
     }
 };
+class trainer {
+public:
+    FFNLinear student;
+    map<float, float> dataset;
+    int steps;
+    trainer(FFNLinear student){
+        this->student = student;
+    }
+    void train() {
+        vector<float> inputs;
+        vector<float> outputs;
+
+        for (auto& data : dataset) {
+            inputs.push_back(data.first);
+            outputs.push_back(data.second);
+        }
+        for (int i = 0; i < steps; i++) {
+            student.Backward(inputs,outputs);
+        }
+    }
+};
 int main()
 {
-    FFNLinear binaryClassifier({ Layer(1,8), Layer(8,1)});
-    vector<float> inputs = {1.0, 2.0, 10.0};
-    vector<float> input1 = { 1.0 };
-    vector<float> outputs = { 0.5, 1.0, 5.0 };
-    float untrainedOutput = binaryClassifier.Forward(input1)[0];
-    binaryClassifier.Backward(input1, 0.5, untrainedOutput);
-    for (int i = 0; i < 100; i++) {
-        binaryClassifier.Backward(input1, 0.5, binaryClassifier.Forward(input1)[0]);;
-        cout << binaryClassifier.Forward(input1)[0];
+    trainer test(FFNLinear({ Layer(1,8),Layer(8,8),Layer(8,8),Layer(8,1) }));
+    for (int i = 0; i <= 100; i++) {
+        test.dataset[i] = i * i;
     }
-    cout << binaryClassifier.Forward(input1)[0];
-}
+    test.steps = 90000.0;
+    test.train();
+    cout << test.student.Forward({ 2 })[0] << " Excpected: 4" << endl;
+    cout << test.student.Forward({ 4 })[0] << " Excpected: 16" << endl;
+};
